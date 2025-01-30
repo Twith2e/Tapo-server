@@ -20,12 +20,13 @@ const userSchema = mongoose.Schema({
     trim: true,
   },
   pin: {
-    type: String,
+    type: Number,
     require: true,
     trim: true,
   },
   profilePic: {
     type: String,
+    default: null,
     required: false,
   },
   lastOnline: {
@@ -37,20 +38,28 @@ const userSchema = mongoose.Schema({
     required: true,
     trim: true,
   },
+  resetPasswordToken: {
+    type: String,
+    default: null,
+  },
+  resetPasswordTokenExpDate: {
+    type: String,
+    default: null,
+  },
 });
 
-userSchema.pre("save", async function (next) {
-  try {
-    const hashedPin = await bcrypt.hash(this.pin, saltround);
-    if (hashedPin) {
-      this.pin = hashedPin;
-    }
-    next();
-  } catch (error) {
-    console.log(error);
-    next();
-  }
-});
+// userSchema.pre("save", async function (next) {
+//   try {
+//     const hashedPin = await bcrypt.hash(this.pin, saltround);
+//     if (hashedPin) {
+//       this.pin = hashedPin;
+//     }
+//     next();
+//   } catch (error) {
+//     console.log(error);
+//     next();
+//   }
+// });
 
 const userModel = mongoose.model("user", userSchema);
 

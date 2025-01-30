@@ -1,8 +1,12 @@
 const express = require("express");
 const router = express.Router();
 
-const { googleAuth } = require("../controllers/users.controller");
+const {
+  googleOAuthReq,
+  googleOAuthCallback,
+} = require("../controllers/users.controller");
 
-router.get("/google", googleAuth);
+router.post("/request", googleOAuthReq);
+router.get("/callback", googleOAuthCallback);
 
 module.exports = router;
