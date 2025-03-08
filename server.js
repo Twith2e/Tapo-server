@@ -5,7 +5,7 @@ const session = require("express-session");
 const connect = require("./config/mongodb.connection");
 const bodyParser = require("body-parser");
 const cors = require("cors");
-const otpRouters = require("./routers/users.routers");
+const userRouter = require("./routers/users.routers");
 require("dotenv").config();
 const port = process.env.PORT || 3000;
 
@@ -20,7 +20,7 @@ app.set("view engine", "ejs");
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
-app.use("/auth", otpRouters);
+app.use("/users", userRouter);
 
 connect(process.env.MONGODB_URL);
 
