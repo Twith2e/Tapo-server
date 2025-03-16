@@ -1,4 +1,6 @@
 require("dotenv").config();
+const generateAccessToken = require("../utils/generateAccessToken");
+const generateRefreshToken = require("../utils/generateRefreshToken");
 const redisClient = require("../config/redis.connection");
 const crypto = require("crypto");
 const userModel = require("../models/users.model");
@@ -175,8 +177,23 @@ const register = async (req, res) => {
         return res
           .status(400)
           .json({ error: "Unable to create profile, please try again" });
-      return res.status(200).json({ message: "Profile created successfully" });
+      const accessToken = generateAccessToken(registeredUser);
+      const refreshToken = generateRefreshToken(registeredUser);
+      console.log(accessToken);
+      console.log(refreshToken);
+      if (accessToken && refreshToken) {
+        res.cookie("refreshToken", refreshToken, { httpOnly: true });
+        return res.status(200).json({
+          message: "Profile created successfully",
+          success: true,
+          accessToken,
+          email,
+        });
+      } else {
+        console.log("Refresh Token or Access Token is missing");
+      }
     } catch (error) {
+      console.log(error);
       return res.status(500).json({ error: "Invalid email" });
     }
   } catch (error) {
