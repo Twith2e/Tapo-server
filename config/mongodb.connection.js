@@ -1,6 +1,6 @@
-const mongoose = require("mongoose");
+import mongoose from "mongoose";
 
-const connect = async (url) => {
+export default async function (url) {
   try {
     const connection = mongoose.connect(url, {
       serverSelectionTimeoutMS: 30000,
@@ -12,6 +12,4 @@ const connect = async (url) => {
   } catch (error) {
     console.log(error.message);
   }
-};
-
-module.exports = connect;
+}

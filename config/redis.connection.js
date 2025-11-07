@@ -1,23 +1,27 @@
-const { createClient } = require("redis");
+import { createClient } from "redis";
+import dotenv from "dotenv";
+
+dotenv.config();
 
 const redisClient = createClient({
+  username: "default",
   password: process.env.REDIS_PASSWORD,
   socket: {
-    host: "redis-17809.c341.af-south-1-1.ec2.redns.redis-cloud.com",
-    port: 17809,
+    host: "redis-13180.c323.us-east-1-2.ec2.redns.redis-cloud.com",
+    port: 13180,
   },
 });
 
-redisClient.on("error", (err) => console.error("❌ Redis Error:", err));
+redisClient.on("error", (err) => console.error("Redis Error:", err));
 
 async function redisConnection() {
   try {
     if (!redisClient.isOpen) {
       await redisClient.connect();
-      console.log("✅ Connected to Redis Cloud");
+      console.log("Connected to Redis Cloud");
     }
   } catch (error) {
-    console.log("❌ Redis connection error:", error);
+    console.log("Redis connection error:", error);
   }
 }
 
@@ -27,8 +31,8 @@ redisConnection();
 // Handle process termination
 process.on("SIGINT", async () => {
   await redisClient.quit();
-  console.log("🚀 Redis connection closed.");
+  console.log("Redis connection closed.");
   process.exit(0);
 });
 
-module.exports = redisClient;
+export default redisClient;

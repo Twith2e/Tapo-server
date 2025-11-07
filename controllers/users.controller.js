@@ -1,123 +1,57 @@
-require("dotenv").config();
-const generateAccessToken = require("../utils/generateAccessToken");
-const generateRefreshToken = require("../utils/generateRefreshToken");
-const redisClient = require("../config/redis.connection");
-const crypto = require("crypto");
-const userModel = require("../models/users.model");
-const mailer = require("nodemailer");
-const { google } = require("googleapis");
-const jwt = require("jsonwebtoken");
-const REDIRECT_URI = "https://developers.google.com/oauthplayground";
-const oAuth2Client = new google.auth.OAuth2(
-  process.env.GOOGLE_CLIENT_ID,
-  process.env.GOOGLE_CLIENT_SECRET,
-  REDIRECT_URI
-);
+import dotenv from "dotenv";
+import generateAccessToken from "../utils/generateAccessToken.js";
+import generateRefreshToken from "../utils/generateRefreshToken.js";
+import redisClient from "../config/redis.connection.js";
+import userModel from "../models/users.model.js";
+import jwt from "jsonwebtoken";
+import { generateOTP, storeOTP } from "../utils/otp.js";
+import sendEmail from "../utils/email.js";
 
-oAuth2Client.setCredentials({
-  refresh_token: process.env.GOOGLE_REFRESH_TOKEN,
-});
-
-const passwordRegex =
-  /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/;
-
-async function createTransporter() {
-  try {
-    const accessToken = await oAuth2Client.getAccessToken();
-    if (!accessToken) {
-      console.error("Access token not available");
-      return;
-    }
-    const transporter = mailer.createTransport({
-      service: "gmail",
-      auth: {
-        type: "OAuth2",
-        user: "abdulbasitadebajo1619@gmail.com",
-        clientId: process.env.GOOGLE_CLIENT_ID,
-        clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-        refreshToken: process.env.GOOGLE_REFRESH_TOKEN,
-        accessToken: process.env.GOOGLE_ACCESS_TOKEN,
-      },
-    });
-    return transporter;
-  } catch (error) {
-    throw error;
-  }
-}
-async function sendEmail(recipient, message, subject) {
-  try {
-    const transporter = await createTransporter();
-    const mailOptions = {
-      from: "temiladeabdulbasit2002@gmail.com",
-      to: recipient,
-      subject,
-      html: message,
-    };
-
-    const info = await transporter.sendMail(mailOptions);
-    if (!info) return false;
-    return true;
-  } catch (error) {
-    console.log("Error sending mail", error);
-    return false;
-  }
-}
-
-function generateOTP() {
-  return crypto.randomInt(100000, 999999).toString();
-}
-
-async function storeOTP(email, otp, expiry = 300) {
-  redisClient.setEx(`otp:${email}`, expiry, otp);
-}
+dotenv.config();
 
 const sendOTP = async (req, res) => {
+  const { email } = req.body;
   try {
-    const { email } = req.body;
-    try {
-      const verifiedEmail = jwt.verify(email, process.env.JWT_SECRET);
-      const existingUser = await userModel.findOne({ email: verifiedEmail });
-      if (existingUser)
-        return res.status(400).json({ error: "User already exists" });
-      const generatedOTP = generateOTP();
-      const emailMessage = `The One Time Password for your Tapo account is ${generatedOTP}, it expires in 5 minutes. Please do not share this with anyone`;
+    const verifiedEmail = jwt.verify(email, process.env.JWT_SECRET);
+    const existingUser = await userModel.findOne({ email: verifiedEmail });
+    if (existingUser)
+      return res.status(400).json({ error: "User already exists" });
+    const generatedOTP = generateOTP();
+    const emailMessage = `The One Time Password for your Tapo account is ${generatedOTP}, it expires in 5 minutes. Please do not share this with anyone`;
 
-      const sentMail = await sendEmail(
-        verifiedEmail,
-        emailMessage,
-        "Verify Email"
-      );
-      if (!sentMail)
-        return res
-          .status(500)
-          .json({ error: "Unable to send mail, please try again" });
-      const hashedEmail = jwt.sign(verifiedEmail, process.env.JWT_SECRET);
-      await storeOTP(hashedEmail, generatedOTP);
-      return res.status(200).json({
-        message: "Email has been sent",
-        email: hashedEmail,
-        hashedEmail: email,
-      });
-    } catch (error) {
-      const existingUser = await userModel.findOne({ email });
-      if (existingUser)
-        return res.status(400).json({ error: "User already exists" });
-      const generatedOTP = generateOTP();
-      const emailMessage = `The One Time Password for your Tapo account is ${generatedOTP}, it expires in 5 minutes. Please do not share this with anyone`;
-
-      const sentMail = await sendEmail(email, emailMessage, "Verify Email");
-      if (!sentMail)
-        return res
-          .status(500)
-          .json({ error: "Unable to send mail, please try again" });
-      const hashedEmail = jwt.sign(email, process.env.JWT_SECRET);
-      await storeOTP(hashedEmail, generatedOTP);
+    const sentMail = await sendEmail(
+      verifiedEmail,
+      emailMessage,
+      "Verify Email"
+    );
+    if (!sentMail)
       return res
-        .status(200)
-        .json({ message: "Email has been sent", email, hashedEmail });
-    }
+        .status(500)
+        .json({ error: "Unable to send mail, please try again" });
+    const hashedEmail = jwt.sign(verifiedEmail, process.env.JWT_SECRET);
+    await storeOTP(hashedEmail, generatedOTP);
+    return res.status(200).json({
+      message: "Email has been sent",
+      email: hashedEmail,
+      hashedEmail: email,
+    });
   } catch (error) {
-    console.log(error);
+    const existingUser = await userModel.findOne({ email });
+    if (existingUser)
+      return res.status(400).json({ error: "User already exists" });
+    const generatedOTP = generateOTP();
+    const emailMessage = `The One Time Password for your Tapo account is ${generatedOTP}, it expires in 5 minutes. Please do not share this with anyone`;
+
+    const sentMail = await sendEmail(email, emailMessage, "Verify Email");
+    if (!sentMail)
+      return res
+        .status(500)
+        .json({ error: "Unable to send mail, please try again" });
+    const hashedEmail = jwt.sign(email, process.env.JWT_SECRET);
+    await storeOTP(hashedEmail, generatedOTP);
+    return res
+      .status(200)
+      .json({ message: "Email has been sent", email, hashedEmail });
   }
 };
 
@@ -182,7 +116,10 @@ const register = async (req, res) => {
       console.log(accessToken);
       console.log(refreshToken);
       if (accessToken && refreshToken) {
-        res.cookie("refreshToken", refreshToken, { httpOnly: true });
+        res.cookie("refreshToken", refreshToken, {
+          httpOnly: true,
+          secure: false,
+        });
         return res.status(200).json({
           message: "Profile created successfully",
           success: true,
@@ -202,4 +139,49 @@ const register = async (req, res) => {
   }
 };
 
-module.exports = { register, sendOTP, verifyOTP };
+const refreshToken = async (req, res) => {
+  const refreshToken = req.cookies.refreshToken;
+  if (!refreshToken)
+    return res.status(401).json({ error: "Unauthorized: Token missing" });
+  try {
+    const decoded = jwt.verify(refreshToken, process.env.JWT_SECRET);
+    const user = await userModel.findOne({ email: decoded });
+    if (!user) return res.status(404).json({ error: "User not found" });
+    const accessToken = generateAccessToken(user);
+    return res.status(200).json({
+      message: "Token refreshed successfully",
+      success: true,
+      accessToken,
+      email: user.email,
+    });
+  } catch (error) {
+    return res.status(500).json({ error: "Invalid token" });
+  }
+};
+
+const fetchUser = async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({
+        error: "Unauthorized: Missing or malformed Authorization header",
+      });
+    }
+    const token = authHeader.split(" ")[1];
+    if (!token)
+      return res.status(401).json({ error: "Unauthorized: Token missing" });
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      const user = await userModel.findOne({ email: decoded });
+      if (!user) return res.status(404).json({ error: "User not found" });
+      return res.status(200).json({ status: true, user });
+    } catch (error) {
+      return res.status(500).json({ error: "Invalid token" });
+    }
+  } catch (error) {
+    console.log(error);
+    return res.status(500).json({ error: "Internal Server Error" });
+  }
+};
+
+export { register, sendOTP, verifyOTP, fetchUser, refreshToken };

@@ -1,25 +1,25 @@
-const mongoose = require("mongoose");
-const bcrypt = require("bcryptjs");
-
-const saltround = 12;
+import mongoose from "mongoose";
 
 const userSchema = mongoose.Schema({
   displayName: {
     type: String,
     required: true,
-    trim: true,
   },
   email: {
     type: String,
     required: true,
-    trim: true,
+    lowercase: true,
+    validate: {
+      validator: (email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email),
+      message: "Invalid email address",
+    },
   },
   profilePic: {
     type: String,
     default: null,
     required: false,
   },
-  lastOnline: {
+  lastSeen: {
     type: Date,
     default: new Date(),
   },
@@ -27,6 +27,7 @@ const userSchema = mongoose.Schema({
     type: String,
     required: true,
     trim: true,
+    enum: ["offline", "online"],
     default: "offline",
   },
   resetPasswordToken: {
@@ -37,21 +38,26 @@ const userSchema = mongoose.Schema({
     type: Date,
     default: null,
   },
+  meta: {
+    unreadCount: {
+      type: Number,
+      default: 0,
+    },
+    lastMessage: {
+      type: mongoose.SchemaTypes.ObjectId,
+      ref: "Message",
+    },
+  },
+  createdAt: {
+    type: Date,
+    default: Date.now,
+  },
+  updatedAt: {
+    type: Date,
+    default: Date.now,
+  },
 });
 
-// userSchema.pre("save", async function (next) {
-//   try {
-//     const hashedPin = await bcrypt.hash(this.password, saltround);
-//     if (hashedPin) {
-//       this.password = hashedPin;
-//     }
-//     next();
-//   } catch (error) {
-//     console.log(error);
-//     next();
-//   }
-// });
+const userModel = mongoose.model("User", userSchema);
 
-const userModel = mongoose.model("user", userSchema);
-
-module.exports = userModel;
+export default userModel;
