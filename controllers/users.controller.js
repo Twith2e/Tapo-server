@@ -1,11 +1,14 @@
+import mongoose from "mongoose";
 import dotenv from "dotenv";
 import generateAccessToken from "../utils/generateAccessToken.js";
 import generateRefreshToken from "../utils/generateRefreshToken.js";
 import redisClient from "../config/redis.connection.js";
 import userModel from "../models/users.model.js";
+import contactModel from "../models/contacts.model.js";
 import jwt from "jsonwebtoken";
 import { generateOTP, storeOTP } from "../utils/otp.js";
 import sendEmail from "../utils/email.js";
+import { normalizeEmail } from "../utils/normalizeEmail.js";
 
 dotenv.config();
 
@@ -95,7 +98,21 @@ const register = async (req, res) => {
       });
     }
     try {
-      const verifiedEmail = jwt.verify(email, process.env.JWT_SECRET);
+      let verifiedEmail;
+      try {
+        verifiedEmail = jwt.verify(email, process.env.JWT_SECRET);
+      } catch (_err) {
+        verifiedEmail = email;
+      }
+
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (
+        typeof verifiedEmail !== "string" ||
+        !emailRegex.test(verifiedEmail)
+      ) {
+        return res.status(400).json({ error: "Invalid email format" });
+      }
+
       const existingUser = await userModel.findOne({ email: verifiedEmail });
       if (existingUser) {
         return res.status(400).json({
@@ -112,13 +129,15 @@ const register = async (req, res) => {
           .status(400)
           .json({ error: "Unable to create profile, please try again" });
       const accessToken = generateAccessToken(registeredUser);
-      const refreshToken = generateRefreshToken(registeredUser);
-      console.log(accessToken);
-      console.log(refreshToken);
+      const refreshToken = await generateRefreshToken(registeredUser);
       if (accessToken && refreshToken) {
+        const isProd = process.env.NODE_ENV === "production";
         res.cookie("refreshToken", refreshToken, {
           httpOnly: true,
-          secure: false,
+          secure: isProd,
+          sameSite: isProd ? "none" : "lax",
+          path: "/",
+          maxAge: 30 * 24 * 60 * 60 * 1000,
         });
         return res.status(200).json({
           message: "Profile created successfully",
@@ -130,22 +149,31 @@ const register = async (req, res) => {
         console.log("Refresh Token or Access Token is missing");
       }
     } catch (error) {
-      console.log(error);
+      console.log("register-jwt-error: ", error);
       return res.status(500).json({ error: "Invalid email" });
     }
   } catch (error) {
-    console.log(error);
+    console.log("registration-error: ", error);
     return res.status(500).json({ error: "Internal Server Error" });
   }
 };
 
 const refreshToken = async (req, res) => {
-  const refreshToken = req.cookies.refreshToken;
-  if (!refreshToken)
+  const rtCookie = req.cookies?.refreshToken;
+  const rtHeader = req.headers.cookie
+    ?.split("; ")
+    ?.find((cookie) => cookie.startsWith("refreshToken="))
+    ?.split("=")[1];
+  const refreshToken = typeof rtCookie === "string" ? rtCookie : rtHeader;
+  console.log("refresh-token:", refreshToken);
+
+  if (typeof refreshToken !== "string")
     return res.status(401).json({ error: "Unauthorized: Token missing" });
   try {
-    const decoded = jwt.verify(refreshToken, process.env.JWT_SECRET);
-    const user = await userModel.findOne({ email: decoded });
+    console.log("refreshToken: ", refreshToken);
+    const decoded = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET);
+    console.log("decoded: ", decoded);
+    const user = await userModel.findOne({ email: decoded.email });
     if (!user) return res.status(404).json({ error: "User not found" });
     const accessToken = generateAccessToken(user);
     return res.status(200).json({
@@ -155,6 +183,10 @@ const refreshToken = async (req, res) => {
       email: user.email,
     });
   } catch (error) {
+    if (error.name === "TokenExpiredError") {
+      return res.status(401).json({ error: "Unauthorized: Token expired" });
+    }
+    console.log("refresh-token-error: ", error);
     return res.status(500).json({ error: "Invalid token" });
   }
 };
@@ -171,17 +203,180 @@ const fetchUser = async (req, res) => {
     if (!token)
       return res.status(401).json({ error: "Unauthorized: Token missing" });
     try {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      const user = await userModel.findOne({ email: decoded });
+      console.log("token: ", token);
+
+      const decoded = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
+      console.log("decoded: ", decoded);
+      const user = await userModel.findOne({ email: decoded.email });
       if (!user) return res.status(404).json({ error: "User not found" });
       return res.status(200).json({ status: true, user });
     } catch (error) {
+      if (error.name === "TokenExpiredError") {
+        return res.status(401).json({ error: "Unauthorized: Token expired" });
+      }
       return res.status(500).json({ error: "Invalid token" });
     }
   } catch (error) {
-    console.log(error);
+    console.log("fetching-user-error: ", error);
     return res.status(500).json({ error: "Internal Server Error" });
   }
 };
 
-export { register, sendOTP, verifyOTP, fetchUser, refreshToken };
+const findUserByEmail = async (req, res) => {
+  const { email } = req.body;
+
+  try {
+    if (!email) return res.status(400).json({ error: "Email is required" });
+    const user = await userModel
+      .findOne({ email })
+      .select("_id email displayName, profilePic")
+      .lean();
+    if (!user)
+      return res.status(404).json({ matched: false, error: "User not found" });
+    return res.status(200).json({ matched: true, user });
+  } catch (error) {
+    console.log("find-user-by-email-error: ", error);
+    return res.status(500).json({ error: "Internal Server Error" });
+  }
+};
+
+const addContact = async (req, res) => {
+  try {
+    const ownerId = req.user._id;
+    const { friendEmail, localName } = req.body;
+    const email = normalizeEmail(friendEmail);
+    if (!email) return res.status(400).json({ error: "Invalid email" });
+
+    const matchedUser = await userModel
+      .findOne({
+        email,
+      })
+      .select("_id email displayName, profilePic")
+      .lean();
+    const contactId = matchedUser ? matchedUser._id : null;
+
+    const filter = { owner: ownerId, email };
+    const update = {
+      $set: {
+        localName,
+        contactUser: contactId,
+        matchedAt: contactId ? new Date() : null,
+        updatedAt: new Date(),
+      },
+      $setOnInsert: {
+        createdAt: new Date(),
+      },
+    };
+
+    const savedContact = await contactModel.findOneAndUpdate(filter, update, {
+      new: true,
+      upsert: true,
+    });
+
+    return res.status(200).json({
+      message: "Friend added successfully",
+      success: true,
+      contact: {
+        _id: savedContact._id,
+        email: savedContact.email,
+        localName: savedContact.localName,
+        matched: !!contactId,
+        user: matchedUser
+          ? {
+              _id: matchedUser._id,
+              name: matchedUser.name,
+              avatarUrl: matchedUser.avatarUrl,
+            }
+          : null,
+      },
+    });
+  } catch (error) {
+    if (error.code === 11000) {
+      return res.status(409).json({ error: "conflict" });
+    }
+    console.error(error);
+    return res.status(500).json({ error: "internal_error" });
+  }
+};
+
+const getContactList = async (req, res) => {
+  try {
+    const ownerId = req.user._id;
+    const contacts = await contactModel.aggregate([
+      { $match: { owner: ownerId } },
+      { $sort: { updateAt: -1 } },
+      {
+        $lookup: {
+          from: "users",
+          localField: "contactUser",
+          foreignField: "_id",
+          as: "contactProfile",
+        },
+      },
+      {
+        $unwind: { path: "$contactProfile", preserveNullAndEmptyArrays: true },
+      },
+      {
+        $project: {
+          email: 1,
+          localName: 1,
+          isBlocked: 1,
+          contactProfile: {
+            _id: "$contactProfile._id",
+            displayName: "$contactProfile.displayName",
+            profilePic: "$contactProfile.profilePic",
+            lastSeen: "$contactProfile.lastSeen",
+          },
+        },
+      },
+    ]);
+    return res.status(200).json({
+      message: "Contact list fetched successfully",
+      success: true,
+      contacts,
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "internal_error" });
+  }
+};
+
+const blockContact = async (req, res) => {
+  try {
+    const ownerId = req.user._id;
+    const { contactEmail } = req.query;
+    const email = normalizeEmail(contactEmail);
+    if (!email) return res.status(404).json({ error: "Email not found" });
+    const filter = { owner: ownerId, email };
+    const update = {
+      $set: {
+        isBlocked: true,
+        updatedAt: new Date(),
+      },
+    };
+    const updatedContact = await contactModel.findOneAndUpdate(filter, update, {
+      new: true,
+    });
+
+    return res.status(200).json({
+      message: "Contact blocked successfully",
+      success: true,
+      contact: updatedContact,
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "internal_error" });
+  }
+};
+
+export {
+  register,
+  sendOTP,
+  verifyOTP,
+  fetchUser,
+  refreshToken,
+  findUserByEmail,
+  addContact,
+  getContactList,
+  blockContact,
+};
