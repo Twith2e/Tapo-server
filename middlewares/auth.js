@@ -10,8 +10,6 @@ export async function authGuard(req, res, next) {
     if (!header) return res.status(401).json({ error: "Missing token" });
 
     const token = header.split(" ")[1];
-    console.log(token);
-
     const decoded = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
 
     const user = await userModel

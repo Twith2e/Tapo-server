@@ -165,14 +165,11 @@ const refreshToken = async (req, res) => {
     ?.find((cookie) => cookie.startsWith("refreshToken="))
     ?.split("=")[1];
   const refreshToken = typeof rtCookie === "string" ? rtCookie : rtHeader;
-  console.log("refresh-token:", refreshToken);
 
   if (typeof refreshToken !== "string")
     return res.status(401).json({ error: "Unauthorized: Token missing" });
   try {
-    console.log("refreshToken: ", refreshToken);
     const decoded = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET);
-    console.log("decoded: ", decoded);
     const user = await userModel.findOne({ email: decoded.email });
     if (!user) return res.status(404).json({ error: "User not found" });
     const accessToken = generateAccessToken(user);
@@ -203,11 +200,10 @@ const fetchUser = async (req, res) => {
     if (!token)
       return res.status(401).json({ error: "Unauthorized: Token missing" });
     try {
-      console.log("token: ", token);
-
       const decoded = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
-      console.log("decoded: ", decoded);
-      const user = await userModel.findOne({ email: decoded.email });
+      const user = await userModel
+        .findOne({ email: decoded.email })
+        .select("_id email profilePic lastSeen displayName status meta");
       if (!user) return res.status(404).json({ error: "User not found" });
       return res.status(200).json({ status: true, user });
     } catch (error) {
@@ -223,7 +219,7 @@ const fetchUser = async (req, res) => {
 };
 
 const findUserByEmail = async (req, res) => {
-  const { email } = req.body;
+  const { email } = req.query;
 
   try {
     if (!email) return res.status(400).json({ error: "Email is required" });
