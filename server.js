@@ -28,8 +28,6 @@ cloudinary.config({
   secure: true,
 });
 
-console.log(cloudinary.config());
-
 const app = express();
 
 app.use(
