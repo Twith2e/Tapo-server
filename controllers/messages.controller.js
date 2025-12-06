@@ -2,6 +2,48 @@ import messageModel from "../models/messages.model.js";
 import conversationModel from "../models/conversations.model.js";
 import userModel from "../models/users.model.js";
 
+/**
+ * normalizeAttachments
+ * Ensures each attachment is an object with expected fields.
+ * Fixes historical data where a URL string was spread into an object of char indices.
+ */
+function normalizeAttachments(attachments) {
+  if (!Array.isArray(attachments)) return [];
+  return attachments.map((a) => {
+    // Already in correct shape
+    if (a && typeof a === "object" && a.url) return a;
+
+    // Attachment saved as a raw string
+    if (typeof a === "string") {
+      const url = a;
+      const formatMatch = url.toLowerCase().match(/\.([a-z0-9]+)(?:\?|#|$)/);
+      return { url, format: formatMatch ? formatMatch[1] : undefined };
+    }
+
+    // Attachment saved as an object of character indices: {"0":"h","1":"t",...}
+    if (a && typeof a === "object" && !a.url) {
+      const charKeys = Object.keys(a).filter((k) => /^\d+$/.test(k));
+      if (charKeys.length) {
+        const url = charKeys
+          .sort((x, y) => Number(x) - Number(y))
+          .map((k) => a[k])
+          .join("");
+        const formatMatch = url.toLowerCase().match(/\.([a-z0-9]+)(?:\?|#|$)/);
+        const normalized = {
+          url,
+          format: formatMatch ? formatMatch[1] : undefined,
+        };
+        // Preserve subdoc _id if present
+        if (a._id) normalized._id = a._id;
+        return normalized;
+      }
+    }
+
+    // Fallback: return as-is
+    return a;
+  });
+}
+
 const getConversations = async (req, res) => {
   try {
     const userId = req.user._id;
@@ -24,13 +66,19 @@ const getConversations = async (req, res) => {
 const getMessages = async (req, res) => {
   try {
     const conversationId = req.params.conversationId;
-    const messages = await messageModel
+    const rawMessages = await messageModel
       .find({ conversation: conversationId })
       .populate("from", "email displayName profilePic")
       .populate("taggedMessage")
       .populate("taggedMessage.from", "email displayName profilePic");
-    if (!messages)
+    if (!rawMessages)
       return res.status(404).json({ message: "No messages found" });
+    // Normalize attachments for each message before responding
+    const messages = rawMessages.map((m) => {
+      const obj = m.toObject();
+      obj.attachments = normalizeAttachments(obj.attachments);
+      return obj;
+    });
     res.status(200).json({ status: true, messages });
   } catch (error) {
     res.status(500).json({ message: error.message });

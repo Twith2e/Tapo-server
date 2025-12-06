@@ -10,11 +10,52 @@ import subscriptionModel from "../models/subscriptions.model.js";
 import { sendPushToTokens } from "../utils/notify.js";
 
 export default function (io, socket) {
+  /**
+   * normalizeAttachmentItem
+   * Converts a client-provided attachment payload to the Message.attachments schema shape.
+   * Returns an object with url, format, size, duration, fileName, width, height.
+   */
+  function normalizeAttachmentItem(item) {
+    if (!item) return null;
+    const url = item.url || item.secure_url;
+    if (!url) return null;
+
+    // Prefer explicit format; otherwise derive from mimeType or URL extension
+    let format = (item.format || "").toLowerCase();
+    const mimeType = (item.mimeType || "").toLowerCase();
+    if (!format && mimeType.includes("/")) {
+      format = mimeType.split("/")[1];
+    }
+    if (!format) {
+      const match = url.toLowerCase().match(/\.([a-z0-9]+)(?:\?|#|$)/);
+      if (match) format = match[1];
+    }
+
+    const size = item.bytes ?? item.size;
+    const duration = item.duration;
+    const fileName =
+      item.originalFilename ??
+      item.fileName ??
+      (item.publicId ? String(item.publicId).split("/").pop() : undefined);
+    const width = item.width;
+    const height = item.height;
+
+    return { url, format, size, duration, fileName, width, height };
+  }
+
+  /**
+   * join-room
+   * Adds the current socket to a room and notifies others.
+   */
   socket.on("join-room", ({ roomId, user }) => {
     socket.join(roomId);
     socket.to(roomId).emit("user-joined", { user, socketId: socket.id });
   });
 
+  /**
+   * leave-room
+   * Removes the current socket from a room and notifies others.
+   */
   socket.on("leave-room", ({ roomId }) => {
     socket.leave(roomId);
     socket.to(roomId).emit("user-left", { socketId: socket.id });
@@ -22,109 +63,116 @@ export default function (io, socket) {
 
   /**
    * initiate-chat
-   * - Validates contact by email, upserts/fetches the direct conversation.
+   * - Validates contact by id, upserts/fetches the direct conversation.
    * - Joins BOTH participants’ sockets (initiator and contact) to the room.
    * - Notifies the initiator (and optionally the room) that chat is initialized.
+   * - Marks pending messages from the other user as delivered.
    */
   socket.on("initiate-chat", async ({ userId, contactId, room }, ack) => {
-    console.log("initiate-chat:", userId, contactId, room);
-    const contact = await userModel.findOne({ _id: contactId });
-    if (!contact) {
-      return socket.emit("error", {
-        status: "error",
-        error: "Contact not found",
-      });
-    }
-    const conversation = await conversationModel.createDirectConversation(
-      userId,
-      contact._id
-    );
-
-    console.log("conversation:", conversation);
-
-    const roomId = conversation._id.toString();
-
-    // Join the current socket to the room
-    socket.join(roomId);
-
-    // Also join all sockets for both participants
-    const initiatorUserId = String(userId);
-    const contactUserId = contact._id.toString();
-
-    const joinAllSockets = (uid) => {
-      const set = io.userSockets?.get(uid);
-      if (!set) return;
-      for (const sid of set) {
-        const s = io.sockets.sockets.get(sid);
-        s?.join(roomId);
-      }
-    };
-
-    joinAllSockets(initiatorUserId);
-    joinAllSockets(contactUserId);
-
-    ack({ status: "success" });
-
-    // Notify the initiator and optionally the whole room
-    socket.emit("chat-initialized", { roomId });
-    io.to(roomId).emit("user-joined", {
-      userId: initiatorUserId,
-      socketId: socket.id,
-    });
-
     try {
-      const connectedUserId = String(socket.userId.toString());
+      const contact = await userModel.findOne({ _id: contactId });
+      if (!contact) {
+        return socket.emit("error", {
+          status: "error",
+          error: "Contact not found",
+        });
+      }
+      const conversation = await conversationModel.createDirectConversation(
+        userId,
+        contact._id
+      );
 
-      console.log("conversationId:", conversation._id);
+      const roomId = conversation._id.toString();
+      socket.join(roomId);
 
-      const pending = await messageModel
-        .find({
-          conversation: conversation._id,
-          status: "sent",
-          from: { $ne: connectedUserId },
-        })
-        .select("_id")
-        .lean();
+      const initiatorUserId = String(userId);
+      const contactUserId = contact._id.toString();
 
-      console.log("pending:", pending);
+      const joinAllSockets = (uid) => {
+        const set = io.userSockets?.get(uid);
+        if (!set) return;
+        for (const sid of set) {
+          const s = io.sockets.sockets.get(sid);
+          s?.join(roomId);
+        }
+      };
 
-      if (pending.length > 0) {
-        const updatedMessages = await messageModel.updateMany(
-          {
+      joinAllSockets(initiatorUserId);
+      joinAllSockets(contactUserId);
+
+      ack?.({ status: "success" });
+
+      socket.emit("chat-initialized", { roomId });
+      io.to(roomId).emit("user-joined", {
+        userId: initiatorUserId,
+        socketId: socket.id,
+      });
+
+      try {
+        const connectedUserId = String(socket.userId?.toString());
+        const pending = await messageModel
+          .find({
             conversation: conversation._id,
             status: "sent",
             from: { $ne: connectedUserId },
-          },
-          { $set: { status: "delivered" } }
-        );
+          })
+          .select("_id")
+          .lean();
 
-        if (!updatedMessages) {
-          throw err;
-        }
+        if (pending.length > 0) {
+          const updatedMessages = await messageModel.updateMany(
+            {
+              conversation: conversation._id,
+              status: "sent",
+              from: { $ne: connectedUserId },
+            },
+            { $set: { status: "delivered" } }
+          );
 
-        for (const m of pending) {
-          io.to(roomId).emit("message:delivered", {
-            messageId: String(m._id),
-          });
+          if (updatedMessages) {
+            for (const m of pending) {
+              io.to(roomId).emit("message:delivered", {
+                messageId: String(m._id),
+              });
+            }
+          }
         }
+      } catch (err) {
+        console.log("initiate-chat delivery catch-up error:", err);
       }
     } catch (err) {
-      console.log("initiate-chat delivery catch-up error:", err);
+      console.log("initiate-chat error:", err);
+      ack?.({ status: "error", error: err.message });
     }
   });
 
+  /**
+   * join:conversation
+   * Adds the current socket to an existing conversation room.
+   */
   socket.on("join:conversation", ({ roomId }) => {
     socket.join(roomId);
   });
 
+  /**
+   * send-message
+   * Persists the text message and any provided attachments on the Message document.
+   * - Normalizes attachment payloads to {url, format, size, duration, fileName, width, height}.
+   * - Pushes attachments to Message.attachments.
+   * - Returns payload including normalized attachments for client consumption.
+   */
   socket.on(
     "send-message",
-    async ({ roomId, message, from, tempId, taggedMessage }, ack) => {
+    async (
+      { roomId, message, from, tempId, taggedMessage, attachment },
+      ack
+    ) => {
       try {
         const conversation = await conversationModel.findById(roomId);
         if (!conversation) {
-          return ack({ status: "error", error: "Conversation not found" });
+          return ack?.({ status: "error", error: "Conversation not found" });
         }
+
         const savedMessage = await messageModel.create({
           conversation: conversation._id,
           from,
@@ -134,11 +182,28 @@ export default function (io, socket) {
         });
 
         if (!savedMessage) {
-          return ack({ status: "failed" });
+          return ack?.({ status: "failed" });
         }
-        console.log(message);
 
         await conversation.updateLastMessage(savedMessage._id, savedMessage.ts);
+
+        // Persist attachment(s) and collect normalized objects
+        const attachmentsData = [];
+        if (attachment) {
+          const items = Array.isArray(attachment) ? attachment : [attachment];
+          for (const item of items) {
+            const normalized = normalizeAttachmentItem(item);
+            if (normalized) attachmentsData.push(normalized);
+          }
+
+          if (attachmentsData.length) {
+            await messageModel.updateOne(
+              { _id: savedMessage._id },
+              { $push: { attachments: { $each: attachmentsData } } }
+            );
+          }
+        }
+
         const payload = {
           id: savedMessage._id.toString(),
           conversationId: conversation._id.toString(),
@@ -146,9 +211,15 @@ export default function (io, socket) {
           message: savedMessage.message,
           ts: savedMessage.ts.toISOString(),
           tempId,
+          attachments: attachmentsData,
         };
+
+        console.log("send-message payload:", payload);
+
         socket.to(roomId).emit("chat-message", payload);
-        ack({ status: "success", payload });
+        ack?.({ status: "success", payload });
+
+        // Push notification to offline recipients
         process.nextTick(async () => {
           try {
             const recipients = conversation.participants
@@ -157,38 +228,33 @@ export default function (io, socket) {
             const tokensToNotify = new Map();
             for (const rid of recipients) {
               const isAnyVisible = await anySocketVisibleForUser(rid);
-              if (isAnyVisible) {
-                continue;
-              }
+              if (isAnyVisible) continue;
+
               const socketIds = await getUserSocketIds(rid);
               if (socketIds.length === 0) {
                 const subs = await subscriptionModel.find({ user: rid });
                 for (const s of subs) {
                   if (s.token) tokensToNotify.set(s.token, true);
                 }
-              } else {
-                continue;
               }
+            }
 
-              const tokens = Array.from(tokensToNotify.keys());
-              const BATCH = 500;
+            const tokens = Array.from(tokensToNotify.keys());
+            const BATCH = 500;
+            for (let i = 0; i < tokens.length; i += BATCH) {
+              const batch = tokens.slice(i, i + BATCH);
+              if (batch.length === 0) break;
 
-              for (let i = 0; i < tokens.length; i += BATCH) {
-                const batch = tokens.slice(i, i + BATCH);
-                if (batch.length === 0) break;
-
-                await sendPushToTokens(batch, {
-                  notification: {
-                    title: "New Message",
-                    body:
-                      message.length > 120 ? message.slice(0, 120) : message,
-                  },
-                  data: {
-                    conversationId: conversation._id.toString(),
-                    messageId: savedMessage._id.toString(),
-                  },
-                });
-              }
+              await sendPushToTokens(batch, {
+                notification: {
+                  title: "New Message",
+                  body: message?.length > 120 ? message.slice(0, 120) : message,
+                },
+                data: {
+                  conversationId: conversation._id.toString(),
+                  messageId: savedMessage._id.toString(),
+                },
+              });
             }
           } catch (error) {
             console.log(error);
@@ -196,67 +262,72 @@ export default function (io, socket) {
         });
       } catch (error) {
         console.log(error);
-        ack({ status: "error", error: error.message });
+        ack?.({ status: "error", error: error.message });
       }
     }
   );
 
+  /**
+   * message:received
+   * Marks a message as delivered and notifies the room.
+   */
   socket.on("message:received", async ({ messageId, roomId }) => {
-    console.log("messageId: ", messageId);
-    console.log("roomId: ", roomId);
-    const message = await messageModel.findById(messageId);
-    if (!message) {
-      console.log("could not find message");
-      return;
+    try {
+      const message = await messageModel.findById(messageId);
+      if (!message) return;
+      const conversation = await conversationModel.findById(roomId);
+      if (!conversation) return;
+      message.status = "delivered";
+      const savedMessage = await message.save();
+      if (!savedMessage) return;
+      socket
+        .to(roomId)
+        .emit("message:delivered", { messageId: message._id.toString() });
+    } catch (err) {
+      console.log("message:received error:", err);
     }
-    const conversation = await conversationModel.findById(roomId);
-    if (!conversation) {
-      console.log("could not find conversation");
-      return;
-    }
-    message.status = "delivered";
-    const savedMessage = await message.save();
-    if (!savedMessage) {
-      console.log("could not save message");
-      return;
-    }
-
-    console.log("saved message: ", savedMessage._id.toString());
-
-    socket
-      .to(roomId)
-      .emit("message:delivered", { messageId: message._id.toString() });
   });
 
+  /**
+   * messages:readUpTo
+   * Marks messages up to a given ID as read and notifies the room.
+   */
   socket.on("messages:readUpTo", async ({ conversationId, upToId }, ack) => {
-    const upToMsg = await messageModel.findById(upToId);
-    if (!upToMsg) return ack?.({ status: "error", error: "not_found" });
+    try {
+      const upToMsg = await messageModel.findById(upToId);
+      if (!upToMsg) return ack?.({ status: "error", error: "not_found" });
 
-    const updatedMessages = await messageModel.updateMany(
-      {
-        conversation: conversationId,
-        ts: { $lte: upToMsg.ts },
-        from: { $ne: socket.userId },
-      },
-      { $set: { status: "read" } }
-    );
+      const updatedMessages = await messageModel.updateMany(
+        {
+          conversation: conversationId,
+          ts: { $lte: upToMsg.ts },
+          from: { $ne: socket.userId },
+        },
+        { $set: { status: "read" } }
+      );
 
-    if (!updatedMessages) {
-      return ack?.({ status: "error", error: "update_failed" });
+      if (!updatedMessages) {
+        return ack?.({ status: "error", error: "update_failed" });
+      }
+
+      socket.to(conversationId).emit("messages:read", {
+        conversationId,
+        upToId,
+        readerId: socket.userId,
+      });
+
+      return ack?.({ status: "ok" });
+    } catch (err) {
+      console.log("messages:readUpTo error:", err);
+      return ack?.({ status: "error", error: err.message });
     }
-
-    socket.to(conversationId).emit("messages:read", {
-      conversationId,
-      upToId,
-      readerId: socket.userId,
-    });
-
-    return ack?.({ status: "ok" });
   });
 
+  /**
+   * create:group
+   * Creates a new group conversation with the given participants.
+   */
   socket.on("create:group", async ({ participants, title, creator }, ack) => {
-    console.log("emission received");
-
     try {
       const users = await userModel.find({ _id: { $in: participants } });
       const validCreator = await userModel.findById(creator);
@@ -267,8 +338,6 @@ export default function (io, socket) {
         });
       }
       if (users.length !== participants.length) {
-        console.log(users);
-
         return ack?.({
           status: "error",
           error: "One or more participants are not registered users",
@@ -291,14 +360,12 @@ export default function (io, socket) {
       );
 
       if (!conversation) {
-        console.log("could not create convo");
         return ack?.({
           status: "error",
           message: "Failed to create conversation",
         });
       }
 
-      console.log(conversation);
       return ack?.({ status: "ok", conversation });
     } catch (error) {
       ack?.({ status: "error", message: error.message });

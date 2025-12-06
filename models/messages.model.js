@@ -12,7 +12,17 @@ const MessageSchema = new Schema({
   from: { type: mongoose.SchemaTypes.ObjectId, ref: "User", required: true },
   message: { type: String, trim: true },
   ts: { type: Date, default: Date.now, index: true },
-  attachments: [{ type: String }],
+  attachments: [
+    {
+      url: String,
+      format: String,
+      size: Number,
+      duration: Number, // for audio/video
+      fileName: String,
+      width: Number,
+      height: Number,
+    },
+  ],
   status: {
     type: String,
     enum: ["sent", "delivered", "read"],

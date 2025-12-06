@@ -9,18 +9,23 @@ const getSigned = async (req, res) => {
   const userId = req.user._id;
   if (!userId) return res.status(404).json({ error: "userId required" });
 
+  let { folder } = req.body;
+
   const timestamp = Math.floor(Date.now() / 1000);
-  const folder = `${process.env.UPLOADS_FOLDER}/${userId}`;
+  if (!folder) {
+    folder = `${process.env.UPLOADS_FOLDER}/${userId}`;
+  } else {
+    folder = `${folder}/${userId.toString()}`;
+  }
 
   const options = {
     timestamp,
     folder,
-    resource_type: "auto",
     eager: "c_scale,w_800",
   };
 
   try {
-    const signature = cloudinary.utils.api_sign_request(
+    const signature = cloudinary.v2.utils.api_sign_request(
       options,
       process.env.CLOUDINARY_API_SECRET
     );
@@ -31,6 +36,8 @@ const getSigned = async (req, res) => {
       timestamp,
       cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
       folder,
+      resource_type: "auto",
+      eager: "c_scale,w_800",
     });
   } catch (error) {
     return res.status(500).json({ error: error.message });

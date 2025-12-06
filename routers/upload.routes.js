@@ -14,7 +14,7 @@ const upload = multer({
   limits: { fileSize: 50 * 1024 * 1024 },
 });
 
-router.get("/sign", authGuard, getSigned);
+router.post("/sign", authGuard, getSigned);
 router.post("/media", authGuard, upload.single("file"), uploadMedia);
 router.post("/status", authGuard, saveStatus);
 router.get("/statuses", authGuard, getStatuses);
